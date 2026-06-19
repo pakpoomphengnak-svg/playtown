@@ -88,6 +88,7 @@ io.on('connection', (socket) => {
     const player = {
       id:          socket.id,
       name:        sanitize(data.name) || 'Player',
+      gender:      data.gender === 'female' ? 'female' : 'male',
       x:           clamp(data.x,    -490, 490),
       z:           clamp(data.z,    -490, 490),
       rotY:        data.rotY   || 0,
