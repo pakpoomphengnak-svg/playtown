@@ -31,7 +31,11 @@ const players = new Map();
 // ── Market Price State ─────────────────────────
 const MARKET_PRICE_RANGE = {
   apple_packaged: { min: 100, max: 200 },
-  juice_grape:    { min: 150, max: 300 },
+  juice_grape: { min: 150, max: 300 },
+  woodplank: { min: 200, max: 400 },
+  ironingot: { min: 250, max: 500 },
+  goldingot: { min: 300, max: 600 },
+  diamond: { min: 350, max: 700 },
 };
 const MARKET_REROLL_MINUTES = 5;
 const MARKET_REROLL_MS      = MARKET_REROLL_MINUTES * 60 * 1000;
