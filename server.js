@@ -79,6 +79,8 @@ io.on('connection', (socket) => {
     player.rotY        = data.rotY        || 0;
     player.isInVehicle = data.isInVehicle || false;
     player.vehicleId   = data.vehicleId   || null;
+    player.isSprinting = data.isSprinting || false;
+    player.isAttacking = data.isAttacking || false;
 
     // broadcast ไปคนอื่น (ไม่ต้องส่งกลับตัวเอง)
     socket.broadcast.emit('playerMoved', {
@@ -88,6 +90,8 @@ io.on('connection', (socket) => {
       rotY:        player.rotY,
       isInVehicle: player.isInVehicle,
       vehicleId:   player.vehicleId,
+      isSprinting: player.isSprinting,
+      isAttacking: player.isAttacking,
     });
   });
 
