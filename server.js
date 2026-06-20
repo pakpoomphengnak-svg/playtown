@@ -142,6 +142,7 @@ io.on('connection', (socket) => {
       rotY:     data.rotY || 0,
       colorHex: existing ? existing.colorHex : null,
       fuel:     (existing && typeof existing.fuel === 'number') ? existing.fuel : (typeof data.fuel === 'number' ? data.fuel : 100),
+      locked:   existing ? !!existing.locked : false,
       driverId: null,
       spawned:  true,
     };
@@ -175,6 +176,21 @@ io.on('connection', (socket) => {
 
     vehicle.colorHex = colorHex;
     io.emit('vehicleColorChanged', { plate, colorHex });
+  });
+
+  // ── ล็อก/ปลดล็อกรถ ───────────────────────────
+  // client ส่งมาหลัง local VehicleLock ตรวจสิทธิ์กุญแจผ่านแล้ว (เหมือนระบบอื่นๆ ที่ client เป็นผู้ตัดสิน)
+  // ห้ามล็อก/ปลดล็อกรถระหว่างมีคนขับอยู่ (กันแกล้งล็อกใส่คนที่กำลังขับ/แย่งปลดล็อกรถคนอื่นขับ)
+  socket.on('vehicleLock', (data) => {
+    const plate  = sanitizePlate(data && data.plate);
+    if (!plate) return;
+    const locked = !!(data && data.locked);
+    const vehicle = vehicles.get(plate);
+    if (!vehicle) return;
+    if (vehicle.driverId && vehicle.driverId !== socket.id) return; // มีคนอื่นขับอยู่ ห้ามยุ่ง
+
+    vehicle.locked = locked;
+    io.emit('vehicleLockChanged', { plate, locked });
   });
 
   // ── ขึ้นรถ (กลายเป็นคนขับ) ───────────────────
