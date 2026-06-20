@@ -98,6 +98,7 @@ io.on('connection', (socket) => {
       rotY:        data.rotY   || 0,
       isInVehicle: false,
       vehicleId:   null,
+      weaponId:    null,
       joinedAt:    Date.now(),
     };
 
@@ -122,6 +123,7 @@ io.on('connection', (socket) => {
     player.vehicleId   = data.vehicleId   || null;
     player.isSprinting = data.isSprinting || false;
     player.isAttacking = data.isAttacking || false;
+    player.weaponId    = sanitizeWeaponId(data.weaponId);
 
     // broadcast ไปคนอื่น (ไม่ต้องส่งกลับตัวเอง)
     socket.broadcast.emit('playerMoved', {
@@ -133,6 +135,7 @@ io.on('connection', (socket) => {
       vehicleId:   player.vehicleId,
       isSprinting: player.isSprinting,
       isAttacking: player.isAttacking,
+      weaponId:    player.weaponId,
     });
   });
 
@@ -157,6 +160,15 @@ function clamp(val, min, max) {
 function sanitize(str) {
   if (typeof str !== 'string') return '';
   return str.replace(/[<>"'&]/g, '').trim().slice(0, 20);
+}
+
+// weaponId ต้องเป็น string สั้นๆ ที่ปลอดภัย (a-z, 0-9, _, -) หรือไม่มีอาวุธ (null)
+// กันกรณี client ส่งค่าผิดรูป (object, string ยาวเกิน, อักขระแปลกๆ) มา broadcast ต่อให้คนอื่น
+function sanitizeWeaponId(weaponId) {
+  if (typeof weaponId !== 'string') return null;
+  const trimmed = weaponId.trim().slice(0, 30);
+  if (!trimmed || !/^[a-zA-Z0-9_-]+$/.test(trimmed)) return null;
+  return trimmed;
 }
 
 // ── Start ──────────────────────────────────────
