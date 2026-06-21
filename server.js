@@ -58,6 +58,13 @@ const PVP_ATTACK_COOLDOWN_MS = 250;  // คูลดาวน์ขั้นต�
 const PVP_RESPAWN_X          = 110;
 const PVP_RESPAWN_Z          = 70;
 
+// ── Sound System ────────────────────────────────
+// world sound ที่ผู้เล่นส่งมาให้ server กระจายต่อ (heal/hit/hit_final/walk) — whitelist กัน soundId มั่ว
+// gacha_spin/gacha_success/click เป็นเสียง UI ฝั่งเดียว ไม่ผ่าน server เลย
+const SOUND_EVENT_IDS = new Set(['heal', 'hit', 'hit_final', 'walk']);
+// จำกัดระยะ broadcast กว้างสุดฝั่ง server (กันสแปม soundEvent ที่ x/z ไกลเกินจริงจนไม่มีใครได้ยินอยู่แล้ว)
+const SOUND_MAX_RADIUS = 30;
+
 // ── ดาเมจสูงสุดต่ออาวุธแต่ละชนิด (ต้องตรงกับ damage/critDamage จริงใน js/weapon/*.js ฝั่ง client) ──
 // ใช้ override PVP_MAX_DAMAGE เฉพาะอาวุธที่อยู่ใน whitelist นี้เท่านั้น (เช่น ไม้พลู ที่มี critDamage 999 ต้องตายจริง)
 // อาวุธที่ไม่อยู่ในนี้ จะถูก clamp ด้วย PVP_MAX_DAMAGE ปกติ (100) เหมือนเดิม กันโกงส่ง weaponId ปลอมมาขอดาเมจสูง
@@ -290,6 +297,7 @@ io.on('connection', (socket) => {
     if (!vehicle.driverId) return; // ต้องมีคนขับอยู่ก่อนถึงจะมีผู้โดยสารได้
     if (vehicle.driverId === socket.id) return; // เป็นคนขับอยู่แล้ว ไม่ต้องขึ้นซ้ำเป็นผู้โดยสาร
     if (vehicle.passengerIds.includes(socket.id)) return; // อยู่ในรถคันนี้แล้ว
+    if (vehicle.locked) return; // รถล็อกอยู่ — ผู้โดยสารขึ้นไม่ได้เช่นกัน
 
     // ── คนนี้ต้องไม่ได้อยู่ในรถคันอื่น/ขับรถคันอื่นอยู่ก่อน (กันซ้อนสองคัน) ──
     const playerSelf = players.get(socket.id);
@@ -356,7 +364,7 @@ io.on('connection', (socket) => {
     vehicle.z    = clamp(data.z, -990, 990);
     vehicle.rotY = data.rotY || 0;
     vehicle.speed = typeof data.speed === 'number' ? data.speed : 0;
-    if (typeof data.fuel === 'number') vehicle.fuel = Math.max(0, Math.min(data.fuel, 1000));
+    if (typeof data.fuel === 'number') vehicle.fuel = Math.max(0, Math.min(data.fuel, 100)); // maxFuel ของรถทุกคันฝั่ง client = 100
 
     socket.broadcast.emit('vehicleMoved', {
       plate,
@@ -434,12 +442,19 @@ io.on('connection', (socket) => {
 
     target.hp = Math.max(0, target.hp - damage);
 
+    // ── isFinal: ดาเมจนี้นับเป็นคริติคอล/สตั้นไหม (เล่น hit_final.ogg แทน hit.ogg ฝั่งเป้าหมาย) ──
+    // เกณฑ์: ดาเมจถึงตาย (HP เหลือ 0) หรือดาเมจชนเพดานคริติคอลของอาวุธนั้น (เช่น poolcue critDamage 999)
+    // คำนวณฝั่ง server เท่านั้น กันไคลเอนต์ผู้โจมตีปลอม flag isFinal มาหลอกเป้าหมาย
+    const weaponCritCap = weaponId ? WEAPON_MAX_DAMAGE[weaponId] : null;
+    const isFinal = target.hp <= 0 || (weaponCritCap != null && damage >= weaponCritCap);
+
     // ── แจ้งเป้าหมายว่าโดนตี (เฉพาะเป้าหมายเท่านั้นที่ต้องหัก HP จริงฝั่งตัวเอง) ──
     io.to(targetId).emit('playerHit', {
       attackerId: socket.id,
       damage,
       weaponId,
       hp:         target.hp,
+      isFinal,
     });
 
     // ── แจ้งทุกคน (รวม attacker) ว่า HP ของเป้าหมายเปลี่ยน ไว้ sync UI เช่นหลอดเลือดเหนือหัว ──
@@ -469,6 +484,26 @@ io.on('connection', (socket) => {
     console.log(`[PvP] ${player.name} ฟื้นคืนชีพ`);
   });
 
+  // ── Sound: world sound (heal/hit/hit_final/walk) — เล่นจากตำแหน่งจริงในโลก ──
+  // client ฝั่งคนเล่นเสียงเองเล่นเสียงเต็มดังไปแล้วในเครื่องตัวเอง ตรงนี้แค่ relay ให้ "คนอื่น" ได้ยิน
+  // โดยฝั่งรับเป็นคนคำนวณ volume ตามระยะของตัวเอง (ใกล้ดัง/ไกลเบา) — ไม่ส่งกลับไปหาคนเล่นเสียงเอง (broadcast)
+  socket.on('soundEvent', (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    const soundId = (data && typeof data.soundId === 'string') ? data.soundId : null;
+    if (!soundId || !SOUND_EVENT_IDS.has(soundId)) return; // กัน soundId มั่ว/ไม่อยู่ใน whitelist
+
+    // ── ตำแหน่งเกิดเสียง: เชื่อตำแหน่งที่ client ส่งมา แต่ clamp ให้อยู่ในแผนที่จริง ──
+    // และ clamp ให้ไม่ห่างจากตำแหน่งผู้เล่นจริงเกิน SOUND_MAX_RADIUS (กันส่งพิกัดมั่วเพื่อสแปมเสียงไกลๆ)
+    let x = clamp(data && data.x, -990, 990);
+    let z = clamp(data && data.z, -990, 990);
+    const dx = x - player.x, dz = z - player.z;
+    if (Math.sqrt(dx * dx + dz * dz) > SOUND_MAX_RADIUS) { x = player.x; z = player.z; }
+
+    socket.broadcast.emit('soundEvent', { soundId, x, z, sourceId: socket.id });
+  });
+
   // ── Disconnect ─────────────────────────────
   socket.on('disconnect', (reason) => {
     const player = players.get(socket.id);
@@ -481,6 +516,9 @@ io.on('connection', (socket) => {
     // ── ถ้าผู้เล่นที่หลุดกำลังขับรถอยู่ ปล่อยรถคันนั้นทิ้งไว้ในโลก (ไม่มีคนขับ) ──
     // และถ้ามีผู้โดยสารอยู่ด้วย ต้องลงพร้อมกันทั้งหมด (ไม่มีคนขับ = ไม่มีใครนั่งต่อได้)
     for (const vehicle of vehicles.values()) {
+      // ── ล้าง retrieverId ที่ค้างอยู่ (กันคน socket ใหม่ที่ได้ id เดิมใช้สิทธิ์ bypass lock) ──
+      if (vehicle.retrieverId === socket.id) vehicle.retrieverId = null;
+
       if (vehicle.driverId === socket.id) {
         vehicle.driverId = null;
         io.emit('vehicleDriverChanged', { plate: vehicle.plate, driverId: null, x: vehicle.x, z: vehicle.z, rotY: vehicle.rotY });
