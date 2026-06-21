@@ -142,9 +142,16 @@ io.on('connection', (socket) => {
       rotY:     data.rotY || 0,
       colorHex: existing ? existing.colorHex : null,
       fuel:     (existing && typeof existing.fuel === 'number') ? existing.fuel : (typeof data.fuel === 'number' ? data.fuel : 100),
-      locked:   existing ? !!existing.locked : false,
+      // ── เชื่อค่า locked ที่ client (เจ้าของรถ) ส่งมาก่อนเสมอ — client เป็นผู้ตัดสินสถานะล็อกจริง
+      //    ผ่าน VehicleLock ที่เก็บถาวรไว้ในเครื่อง (เหมือนระบบอื่นๆ ที่ client ตัดสิน)
+      //    ตกกลับไปใช้ค่าที่ server จำไว้ก่อนหน้า (existing) เฉพาะกรณี client เก่าที่ยังไม่ส่ง locked มา
+      locked:   (typeof data.locked === 'boolean') ? data.locked : (existing ? !!existing.locked : false),
       driverId: null,
       spawned:  true,
+      // ── คนที่เพิ่งเบิกรถคันนี้ออกมา (เจ้าของ) — ให้สิทธิ์ขึ้นรถได้ทันทีแม้ล็อกอยู่ ──
+      // (garage.js auto เข้ารถให้ทันทีหลังเบิก ไม่ผ่าน UI เช็คล็อกตามปกติ)
+      // ให้สิทธิ์เฉพาะตอน client บอกว่าจะ auto-enter ทันทีเท่านั้น (กันเป็นช่องโหว่ค้างไว้ใช้ทีหลัง)
+      retrieverId: data.autoEnter ? socket.id : null,
     };
     vehicles.set(plate, vehicle);
 
@@ -160,8 +167,9 @@ io.on('connection', (socket) => {
     const vehicle = vehicles.get(plate);
     if (!vehicle || !vehicle.spawned) return;
 
-    vehicle.spawned  = false;
-    vehicle.driverId = null;
+    vehicle.spawned    = false;
+    vehicle.driverId   = null;
+    vehicle.retrieverId = null;
 
     io.emit('vehicleDespawned', { plate });
   });
@@ -200,6 +208,11 @@ io.on('connection', (socket) => {
     const vehicle = vehicles.get(plate);
     if (!vehicle || !vehicle.spawned) return;
     if (vehicle.driverId && vehicle.driverId !== socket.id) return; // มีคนขับอยู่แล้ว
+
+    // รถถูกล็อกอยู่ — ห้ามขึ้น เว้นแต่เป็นคนที่เพิ่งเบิกรถคันนี้ออกมาเอง (auto-enter ตอนเบิก)
+    const isRetriever = vehicle.retrieverId === socket.id;
+    if (vehicle.locked && !isRetriever) return;
+    vehicle.retrieverId = null; // ใช้สิทธิ์ bypass ได้แค่ครั้งเดียวตอนเบิกเท่านั้น กันใช้ซ้ำเป็นช่องโหว่ข้ามล็อกถาวร
 
     vehicle.driverId = socket.id;
     io.emit('vehicleDriverChanged', { plate, driverId: socket.id });
