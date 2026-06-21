@@ -225,7 +225,12 @@ io.on('connection', (socket) => {
     const locked = !!(data && data.locked);
     const vehicle = vehicles.get(plate);
     if (!vehicle) return;
-    if (vehicle.driverId && vehicle.driverId !== socket.id) return; // มีคนอื่นขับอยู่ ห้ามยุ่ง
+    if (vehicle.driverId && vehicle.driverId !== socket.id) {
+      // มีคนอื่นขับอยู่ ห้ามยุ่ง — ต้องแจ้งกลับผู้สั่งเสมอ ไม่งั้น client ของผู้สั่งจะค้างสถานะ
+      // "ล็อกแล้ว" จาก optimistic update ทั้งที่ server reject ไป (root cause ของบั๊กล็อกไม่ติด)
+      socket.emit('vehicleLockChanged', { plate, locked: !!vehicle.locked, rejected: true });
+      return;
+    }
 
     vehicle.locked = locked;
     io.emit('vehicleLockChanged', { plate, locked });
