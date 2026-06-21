@@ -36,6 +36,14 @@ const PLATE_RE = /^[A-Z0-9]{1,12}$/;       // ทะเบียนรถ: ต�
 const VEHICLE_TYPE_RE = /^[a-z0-9_]{1,30}$/; // type รถ: a-z, 0-9, _
 const COLOR_HEX_RE = /^#[0-9a-fA-F]{6}$/;     // สีรถ: hex 6 หลัก เช่น #ff0000
 
+// ── PvP Config ──────────────────────────────────
+const PVP_MAX_HP             = 100;
+const PVP_MAX_DAMAGE         = 100;  // กันส่งดาเมจมั่ว/โกง — ดาเมจสูงสุดต่อการตี 1 ครั้งที่ server ยอมรับ
+const PVP_HIT_RANGE          = 3.0;  // ระยะตีสูงสุดที่ server ยอมรับ (กว้างกว่า client เล็กน้อยกันมือสั่น/network jitter)
+const PVP_ATTACK_COOLDOWN_MS = 250;  // คูลดาวน์ขั้นต่ำระหว่างการตีของผู้เล่นคนเดียวกัน (กันสแปม)
+const PVP_RESPAWN_X          = 110;
+const PVP_RESPAWN_Z          = 70;
+
 // ── Market Price State ─────────────────────────
 const MARKET_PRICE_RANGE = {
   apple_packaged: { min: 100, max: 200 },
@@ -112,6 +120,11 @@ io.on('connection', (socket) => {
       vehicleId:   null,
       weaponId:    null,
       joinedAt:    Date.now(),
+      // ── PvP ──
+      hp:            PVP_MAX_HP,
+      maxHp:         PVP_MAX_HP,
+      isDead:        false,
+      _lastAttackAt: 0, // เวลา (ms) ที่ตีโดนล่าสุด — ใช้คุม cooldown กันสแปม
     };
 
     players.set(socket.id, player);
@@ -284,6 +297,76 @@ io.on('connection', (socket) => {
       isAttacking: player.isAttacking,
       weaponId:    player.weaponId,
     });
+  });
+
+  // ── PvP: โจมตีผู้เล่นอื่น ─────────────────────
+  // client (ผู้โจมตี) ส่ง targetId + damage มา — server เป็นผู้ตัดสินสุดท้ายเสมอ:
+  // เช็คว่าทั้งคู่ยังมีอยู่จริง, ไม่ตายอยู่แล้ว, ไม่ได้อยู่ในรถ, ระยะห่างไม่เกิน PVP_HIT_RANGE,
+  // ดาเมจไม่เกิน PVP_MAX_DAMAGE, และไม่ตีถี่เกิน cooldown — กันโกงจากฝั่ง client ผู้โจมตี
+  socket.on('attackPlayer', (data) => {
+    const attacker = players.get(socket.id);
+    if (!attacker || attacker.isDead) return;
+
+    const targetId = (data && typeof data.targetId === 'string') ? data.targetId : null;
+    if (!targetId || targetId === socket.id) return;
+
+    const target = players.get(targetId);
+    if (!target || target.isDead) return;
+    if (attacker.isInVehicle || target.isInVehicle) return; // ตียิงทะลุรถไม่ได้
+
+    // ── ระยะ ──
+    const dx = target.x - attacker.x;
+    const dz = target.z - attacker.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > PVP_HIT_RANGE) return;
+
+    // ── cooldown กันสแปม (ต่อผู้โจมตีคนนี้) ──
+    const now = Date.now();
+    if (now - attacker._lastAttackAt < PVP_ATTACK_COOLDOWN_MS) return;
+    attacker._lastAttackAt = now;
+
+    // ── ดาเมจ: clamp ให้อยู่ในช่วงที่ยอมรับได้เสมอ ──
+    let damage = parseFloat(data && data.damage);
+    if (isNaN(damage) || damage <= 0) return;
+    damage = Math.min(damage, PVP_MAX_DAMAGE);
+
+    const weaponId = sanitizeWeaponId(data && data.weaponId);
+
+    target.hp = Math.max(0, target.hp - damage);
+
+    // ── แจ้งเป้าหมายว่าโดนตี (เฉพาะเป้าหมายเท่านั้นที่ต้องหัก HP จริงฝั่งตัวเอง) ──
+    io.to(targetId).emit('playerHit', {
+      attackerId: socket.id,
+      damage,
+      weaponId,
+      hp:         target.hp,
+    });
+
+    // ── แจ้งทุกคน (รวม attacker) ว่า HP ของเป้าหมายเปลี่ยน ไว้ sync UI เช่นหลอดเลือดเหนือหัว ──
+    io.emit('playerHpChanged', { id: targetId, hp: target.hp });
+
+    console.log(`[PvP] ${attacker.name} → ${target.name}: -${damage} HP (เหลือ ${target.hp})`);
+
+    // ── ตาย ──
+    if (target.hp <= 0 && !target.isDead) {
+      target.isDead = true;
+      io.emit('playerDied', { id: targetId, killerId: socket.id });
+      console.log(`[PvP] ${target.name} เสียชีวิต (โดน ${attacker.name})`);
+    }
+  });
+
+  // ── PvP: ฟื้นคืนชีพ ───────────────────────────
+  socket.on('playerRespawn', () => {
+    const player = players.get(socket.id);
+    if (!player || !player.isDead) return;
+
+    player.isDead = false;
+    player.hp     = player.maxHp;
+    player.x      = PVP_RESPAWN_X;
+    player.z      = PVP_RESPAWN_Z;
+
+    io.emit('playerRespawned', { id: socket.id, x: player.x, z: player.z });
+    console.log(`[PvP] ${player.name} ฟื้นคืนชีพ`);
   });
 
   // ── Disconnect ─────────────────────────────
