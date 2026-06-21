@@ -139,8 +139,8 @@ io.on('connection', (socket) => {
       id:          socket.id,
       name:        sanitize(data.name) || 'Player',
       gender:      data.gender === 'female' ? 'female' : 'male',
-      x:           clamp(data.x,    -490, 490),
-      z:           clamp(data.z,    -490, 490),
+      x:           clamp(data.x,    -990, 990),
+      z:           clamp(data.z,    -990, 990),
       rotY:        data.rotY   || 0,
       isInVehicle: false,
       vehicleId:   null,
@@ -176,8 +176,8 @@ io.on('connection', (socket) => {
     const vehicle = {
       plate,
       type,
-      x:        clamp(data.x, -494, 494),
-      z:        clamp(data.z, -494, 494),
+      x:        clamp(data.x, -990, 990),
+      z:        clamp(data.z, -990, 990),
       rotY:     data.rotY || 0,
       // ── เชื่อค่า colorHex ที่ client (เจ้าของรถ) ส่งมาก่อนเสมอ — client เป็นผู้ตัดสินสีจริง
       //    ผ่าน tuning ที่เก็บถาวรไว้ในเครื่อง (เหมือนระบบอื่นๆ ที่ client ตัดสิน เช่น locked)
@@ -327,8 +327,8 @@ io.on('connection', (socket) => {
     if (!vehicle || vehicle.driverId !== socket.id) return;
 
     vehicle.driverId = null;
-    if (typeof data.x === 'number')    vehicle.x    = clamp(data.x, -494, 494);
-    if (typeof data.z === 'number')    vehicle.z    = clamp(data.z, -494, 494);
+    if (typeof data.x === 'number')    vehicle.x    = clamp(data.x, -990, 990);
+    if (typeof data.z === 'number')    vehicle.z    = clamp(data.z, -990, 990);
     if (typeof data.rotY === 'number') vehicle.rotY = data.rotY;
 
     io.emit('vehicleDriverChanged', { plate, driverId: null, x: vehicle.x, z: vehicle.z, rotY: vehicle.rotY });
@@ -352,8 +352,8 @@ io.on('connection', (socket) => {
     // ต้องเป็นคนขับจริงของรถคันนี้ถึงจะอัปเดตตำแหน่งได้ (กัน client อื่นปลอม)
     if (!vehicle || !vehicle.spawned || vehicle.driverId !== socket.id) return;
 
-    vehicle.x    = clamp(data.x, -494, 494);
-    vehicle.z    = clamp(data.z, -494, 494);
+    vehicle.x    = clamp(data.x, -990, 990);
+    vehicle.z    = clamp(data.z, -990, 990);
     vehicle.rotY = data.rotY || 0;
     vehicle.speed = typeof data.speed === 'number' ? data.speed : 0;
     if (typeof data.fuel === 'number') vehicle.fuel = Math.max(0, Math.min(data.fuel, 1000));
@@ -374,8 +374,8 @@ io.on('connection', (socket) => {
     if (!player) return;
 
     // อัปเดต state บน server
-    player.x           = clamp(data.x, -490, 490);
-    player.z           = clamp(data.z, -490, 490);
+    player.x           = clamp(data.x, -990, 990);
+    player.z           = clamp(data.z, -990, 990);
     player.rotY        = data.rotY        || 0;
     player.isInVehicle = data.isInVehicle || false;
     player.vehicleId   = data.vehicleId   || null;
