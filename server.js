@@ -38,11 +38,23 @@ const COLOR_HEX_RE = /^#[0-9a-fA-F]{6}$/;     // สีรถ: hex 6 หลั�
 
 // ── PvP Config ──────────────────────────────────
 const PVP_MAX_HP             = 100;
-const PVP_MAX_DAMAGE         = 100;  // กันส่งดาเมจมั่ว/โกง — ดาเมจสูงสุดต่อการตี 1 ครั้งที่ server ยอมรับ
+const PVP_MAX_DAMAGE         = 100;  // กันส่งดาเมจมั่ว/โกง — ดาเมจสูงสุดต่อการตี 1 ครั้งที่ server ยอมรับ (ค่า default สำหรับอาวุธที่ไม่อยู่ใน WEAPON_MAX_DAMAGE ด้านล่าง)
 const PVP_HIT_RANGE          = 3.0;  // ระยะตีสูงสุดที่ server ยอมรับ (กว้างกว่า client เล็กน้อยกันมือสั่น/network jitter)
 const PVP_ATTACK_COOLDOWN_MS = 250;  // คูลดาวน์ขั้นต่ำระหว่างการตีของผู้เล่นคนเดียวกัน (กันสแปม)
 const PVP_RESPAWN_X          = 110;
 const PVP_RESPAWN_Z          = 70;
+
+// ── ดาเมจสูงสุดต่ออาวุธแต่ละชนิด (ต้องตรงกับ damage/critDamage จริงใน js/weapon/*.js ฝั่ง client) ──
+// ใช้ override PVP_MAX_DAMAGE เฉพาะอาวุธที่อยู่ใน whitelist นี้เท่านั้น (เช่น ไม้พลู ที่มี critDamage 999 ต้องตายจริง)
+// อาวุธที่ไม่อยู่ในนี้ จะถูก clamp ด้วย PVP_MAX_DAMAGE ปกติ (100) เหมือนเดิม กันโกงส่ง weaponId ปลอมมาขอดาเมจสูง
+const WEAPON_MAX_DAMAGE = {
+  bottle:   20,
+  bottle1:  30,
+  bottle2:  42,
+  poolcue:  999, // ดาเมจปกติ 10 + คริติคอล 999 (ตายเลย) — ต้องอนุญาตค่าสูงสุดถึง 999
+  poolcue1: 999, // ดาเมจปกติ 16 + คริติคอล 999 (ตายเลย)
+  poolcue2: 999, // ดาเมจปกติ 24 + คริติคอล 999 (ตายเลย)
+};
 
 // ── Market Price State ─────────────────────────
 const MARKET_PRICE_RANGE = {
@@ -331,11 +343,13 @@ io.on('connection', (socket) => {
     attacker._lastAttackAt = now;
 
     // ── ดาเมจ: clamp ให้อยู่ในช่วงที่ยอมรับได้เสมอ ──
+    // sanitize weaponId ก่อน เพื่อใช้เลือก cap ที่ถูกต้องตามอาวุธ (กันโกงส่ง weaponId ปลอมมาขอ cap สูง)
+    const weaponId = sanitizeWeaponId(data && data.weaponId);
+    const maxDamageForWeapon = (weaponId && WEAPON_MAX_DAMAGE[weaponId]) || PVP_MAX_DAMAGE;
+
     let damage = parseFloat(data && data.damage);
     if (isNaN(damage) || damage <= 0) return;
-    damage = Math.min(damage, PVP_MAX_DAMAGE);
-
-    const weaponId = sanitizeWeaponId(data && data.weaponId);
+    damage = Math.min(damage, maxDamageForWeapon);
 
     target.hp = Math.max(0, target.hp - damage);
 
