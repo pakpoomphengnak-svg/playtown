@@ -153,7 +153,12 @@ io.on('connection', (socket) => {
       x:        clamp(data.x, -494, 494),
       z:        clamp(data.z, -494, 494),
       rotY:     data.rotY || 0,
-      colorHex: existing ? existing.colorHex : null,
+      // ── เชื่อค่า colorHex ที่ client (เจ้าของรถ) ส่งมาก่อนเสมอ — client เป็นผู้ตัดสินสีจริง
+      //    ผ่าน tuning ที่เก็บถาวรไว้ในเครื่อง (เหมือนระบบอื่นๆ ที่ client ตัดสิน เช่น locked)
+      //    ตกกลับไปใช้ค่าที่ server จำไว้ก่อนหน้า (existing) เฉพาะกรณี client ไม่ได้ส่ง colorHex มา
+      //    (กันบั๊ก: เดิม server ไม่เคยรับ colorHex ตอนเบิกรถเลย ทำให้คนอื่นเห็นรถเป็นสีโรงงาน
+      //     ทั้งที่เจ้าของแต่งสีไว้แล้ว เพราะ server ไม่มีข้อมูลสีจนกว่าจะมีคนเปิด tuning shop ทาสีซ้ำ)
+      colorHex: sanitizeColorHex(data && data.colorHex) || (existing ? existing.colorHex : null),
       fuel:     (existing && typeof existing.fuel === 'number') ? existing.fuel : (typeof data.fuel === 'number' ? data.fuel : 100),
       // ── เชื่อค่า locked ที่ client (เจ้าของรถ) ส่งมาก่อนเสมอ — client เป็นผู้ตัดสินสถานะล็อกจริง
       //    ผ่าน VehicleLock ที่เก็บถาวรไว้ในเครื่อง (เหมือนระบบอื่นๆ ที่ client ตัดสิน)
