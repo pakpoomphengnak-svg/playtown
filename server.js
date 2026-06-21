@@ -36,6 +36,20 @@ const PLATE_RE = /^[A-Z0-9]{1,12}$/;       // ทะเบียนรถ: ต�
 const VEHICLE_TYPE_RE = /^[a-z0-9_]{1,30}$/; // type รถ: a-z, 0-9, _
 const COLOR_HEX_RE = /^#[0-9a-fA-F]{6}$/;     // สีรถ: hex 6 หลัก เช่น #ff0000
 
+// ── จำนวนที่นั่งต่อรถแต่ละประเภท (รวมคนขับ) ──────
+// ต้องตรงกับ `seats` ใน config ของรถแต่ละคันฝั่ง client (js/vehicle/*.js)
+// type ที่ไม่อยู่ใน map นี้ (รถใหม่ในอนาคต) ใช้ DEFAULT_SEATS แทน
+const VEHICLE_SEATS = {
+  r32:         2,
+  audi:        4,
+  starter_car: 4,
+};
+const DEFAULT_SEATS = 4;
+
+function seatsForType(type) {
+  return VEHICLE_SEATS[type] ?? DEFAULT_SEATS;
+}
+
 // ── PvP Config ──────────────────────────────────
 const PVP_MAX_HP             = 100;
 const PVP_MAX_DAMAGE         = 100;  // กันส่งดาเมจมั่ว/โกง — ดาเมจสูงสุดต่อการตี 1 ครั้งที่ server ยอมรับ (ค่า default สำหรับอาวุธที่ไม่อยู่ใน WEAPON_MAX_DAMAGE ด้านล่าง)
@@ -177,6 +191,10 @@ io.on('connection', (socket) => {
       //    ตกกลับไปใช้ค่าที่ server จำไว้ก่อนหน้า (existing) เฉพาะกรณี client เก่าที่ยังไม่ส่ง locked มา
       locked:   (typeof data.locked === 'boolean') ? data.locked : (existing ? !!existing.locked : false),
       driverId: null,
+      // ── ผู้โดยสาร: รายชื่อ socket id ของคนนั่งรถคันนี้ (ไม่รวมคนขับ) ──
+      // คงค่าผู้โดยสารเดิมไว้ไม่ได้ตอนเบิกรถใหม่ (รถเพิ่งออกจากการาจ ยังไม่มีใครอยู่ในรถ)
+      passengerIds: [],
+      seats:    seatsForType(type), // จำนวนที่นั่งทั้งหมด (รวมคนขับ) ตาม type ของรถ
       spawned:  true,
       // ── คนที่เพิ่งเบิกรถคันนี้ออกมา (เจ้าของ) — ให้สิทธิ์ขึ้นรถได้ทันทีแม้ล็อกอยู่ ──
       // (garage.js auto เข้ารถให้ทันทีหลังเบิก ไม่ผ่าน UI เช็คล็อกตามปกติ)
@@ -201,7 +219,15 @@ io.on('connection', (socket) => {
     vehicle.driverId   = null;
     vehicle.retrieverId = null;
 
+    // ── เก็บรถทั้งที่มีผู้โดยสารนั่งอยู่ไม่ได้ตามปกติ (UI ฝั่ง client กันไว้แล้ว)
+    //    แต่ถ้าหลุดมาถึงนี่ ให้เคลียร์สถานะผู้โดยสารทิ้งกันรถ "หาย" ทั้งที่ยังมีคนค้างอยู่ในนั้น
+    const evictedIds = vehicle.passengerIds.slice();
+    vehicle.passengerIds = [];
+
     io.emit('vehicleDespawned', { plate });
+    evictedIds.forEach(pid => {
+      io.to(pid).emit('vehiclePassengerChanged', { plate, passengerIds: [], evicted: true });
+    });
   });
 
   // ── เปลี่ยนสีรถ (จาก tuning shop) ────────────
@@ -253,6 +279,46 @@ io.on('connection', (socket) => {
     io.emit('vehicleDriverChanged', { plate, driverId: socket.id });
   });
 
+  // ── ขึ้นรถเป็นผู้โดยสาร (ไม่ใช่คนขับ) ──────────
+  // ต้องมีคนขับอยู่แล้ว (รถจอดเฉยๆ ไม่มีคนขับ ขึ้นเป็นผู้โดยสารไม่ได้ — ต้องเป็นคนขับก่อนผ่าน vehicleEnter)
+  // ที่นั่งเต็ม (passengerIds.length + คนขับ >= seats) ขึ้นไม่ได้
+  socket.on('vehiclePassengerEnter', (data) => {
+    const plate = sanitizePlate(data && data.plate);
+    if (!plate) return;
+    const vehicle = vehicles.get(plate);
+    if (!vehicle || !vehicle.spawned) return;
+    if (!vehicle.driverId) return; // ต้องมีคนขับอยู่ก่อนถึงจะมีผู้โดยสารได้
+    if (vehicle.driverId === socket.id) return; // เป็นคนขับอยู่แล้ว ไม่ต้องขึ้นซ้ำเป็นผู้โดยสาร
+    if (vehicle.passengerIds.includes(socket.id)) return; // อยู่ในรถคันนี้แล้ว
+
+    // ── คนนี้ต้องไม่ได้อยู่ในรถคันอื่น/ขับรถคันอื่นอยู่ก่อน (กันซ้อนสองคัน) ──
+    const playerSelf = players.get(socket.id);
+    if (playerSelf && playerSelf.isInVehicle) return;
+
+    const occupied = 1 + vehicle.passengerIds.length; // คนขับ + ผู้โดยสารปัจจุบัน
+    if (occupied >= vehicle.seats) {
+      socket.emit('vehiclePassengerChanged', { plate, passengerIds: vehicle.passengerIds.slice(), rejected: true, reason: 'full' });
+      return;
+    }
+
+    vehicle.passengerIds.push(socket.id);
+    io.emit('vehiclePassengerChanged', { plate, passengerIds: vehicle.passengerIds.slice() });
+  });
+
+  // ── ลงจากรถ (ผู้โดยสาร) ───────────────────────
+  socket.on('vehiclePassengerExit', (data) => {
+    const plate = sanitizePlate(data && data.plate);
+    if (!plate) return;
+    const vehicle = vehicles.get(plate);
+    if (!vehicle) return;
+
+    const idx = vehicle.passengerIds.indexOf(socket.id);
+    if (idx === -1) return;
+    vehicle.passengerIds.splice(idx, 1);
+
+    io.emit('vehiclePassengerChanged', { plate, passengerIds: vehicle.passengerIds.slice() });
+  });
+
   // ── ลงรถ (เลิกเป็นคนขับ) ─────────────────────
   socket.on('vehicleExit', (data) => {
     const plate = sanitizePlate(data && data.plate);
@@ -266,6 +332,16 @@ io.on('connection', (socket) => {
     if (typeof data.rotY === 'number') vehicle.rotY = data.rotY;
 
     io.emit('vehicleDriverChanged', { plate, driverId: null, x: vehicle.x, z: vehicle.z, rotY: vehicle.rotY });
+
+    // ── คนขับลงแล้ว → ไม่มีคนขับ ผู้โดยสารที่เหลือต้องลงตามไปด้วย (กันรถไม่มีคนขับแต่ยังมีคนนั่งค้าง) ──
+    if (vehicle.passengerIds.length > 0) {
+      const evictedIds = vehicle.passengerIds.slice();
+      vehicle.passengerIds = [];
+      io.emit('vehiclePassengerChanged', { plate, passengerIds: [] });
+      evictedIds.forEach(pid => {
+        io.to(pid).emit('vehiclePassengerChanged', { plate, passengerIds: [], evicted: true, soloTarget: pid });
+      });
+    }
   });
 
   // ── อัปเดตตำแหน่งรถ (ส่งเฉพาะตอนเป็นคนขับ) ──
@@ -403,10 +479,28 @@ io.on('connection', (socket) => {
     }
 
     // ── ถ้าผู้เล่นที่หลุดกำลังขับรถอยู่ ปล่อยรถคันนั้นทิ้งไว้ในโลก (ไม่มีคนขับ) ──
+    // และถ้ามีผู้โดยสารอยู่ด้วย ต้องลงพร้อมกันทั้งหมด (ไม่มีคนขับ = ไม่มีใครนั่งต่อได้)
     for (const vehicle of vehicles.values()) {
       if (vehicle.driverId === socket.id) {
         vehicle.driverId = null;
         io.emit('vehicleDriverChanged', { plate: vehicle.plate, driverId: null, x: vehicle.x, z: vehicle.z, rotY: vehicle.rotY });
+
+        if (vehicle.passengerIds.length > 0) {
+          const evictedIds = vehicle.passengerIds.slice();
+          vehicle.passengerIds = [];
+          io.emit('vehiclePassengerChanged', { plate: vehicle.plate, passengerIds: [] });
+          evictedIds.forEach(pid => {
+            io.to(pid).emit('vehiclePassengerChanged', { plate: vehicle.plate, passengerIds: [], evicted: true });
+          });
+        }
+        continue;
+      }
+
+      // ── ผู้เล่นที่หลุดเป็นแค่ผู้โดยสาร (ไม่ใช่คนขับ) ของรถคันนี้ → เอาออกจากรายชื่อผู้โดยสาร ──
+      const pIdx = vehicle.passengerIds.indexOf(socket.id);
+      if (pIdx !== -1) {
+        vehicle.passengerIds.splice(pIdx, 1);
+        io.emit('vehiclePassengerChanged', { plate: vehicle.plate, passengerIds: vehicle.passengerIds.slice() });
       }
     }
   });
